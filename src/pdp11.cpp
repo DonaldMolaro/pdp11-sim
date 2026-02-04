@@ -1,0 +1,587 @@
+#include "pdp11.h"
+
+#include <cstdio>
+#include <sstream>
+#include <stdexcept>
+
+namespace pdp11 {
+
+CPU::CPU() : mem(kMemSize, 0) {
+    in_char = []() -> int { return std::getc(stdin); };
+    out_char = [](uint8_t v) { std::putchar(static_cast<int>(v)); };
+    reset();
+}
+
+void CPU::reset() {
+    for (auto &reg : r) {
+        reg = 0;
+    }
+    psw = {};
+    halted = false;
+}
+
+void CPU::load_words(uint16_t address, const std::vector<uint16_t>& words) {
+    for (size_t i = 0; i < words.size(); ++i) {
+        write_word(address + static_cast<uint16_t>(i * 2), words[i]);
+    }
+}
+
+uint16_t CPU::read_word(uint16_t address) const {
+    uint16_t lo = mem[address];
+    uint16_t hi = mem[(address + 1) & 0xFFFF];
+    return static_cast<uint16_t>(lo | (hi << 8));
+}
+
+void CPU::write_word(uint16_t address, uint16_t value) {
+    mem[address] = static_cast<uint8_t>(value & 0xFF);
+    mem[(address + 1) & 0xFFFF] = static_cast<uint8_t>((value >> 8) & 0xFF);
+}
+
+uint8_t CPU::read_byte(uint16_t address) const {
+    return mem[address];
+}
+
+void CPU::write_byte(uint16_t address, uint8_t value) {
+    mem[address] = value;
+}
+
+uint16_t CPU::fetch_word() {
+    uint16_t value = read_word(r[7]);
+    r[7] = static_cast<uint16_t>(r[7] + 2);
+    return value;
+}
+
+void CPU::set_nz(uint16_t value) {
+    psw.n = (value & 0x8000) != 0;
+    psw.z = value == 0;
+}
+
+void CPU::set_nz_byte(uint8_t value) {
+    psw.n = (value & 0x80) != 0;
+    psw.z = value == 0;
+}
+
+CPU::EA CPU::resolve_ea(uint16_t spec, Access access, int size) {
+    uint16_t mode = (spec >> 3) & 0x7;
+    uint16_t reg = spec & 0x7;
+    uint16_t delta = static_cast<uint16_t>(size);
+    if (size == 1 && (reg == 6 || reg == 7)) {
+        delta = 2;
+    }
+
+    EA ea;
+
+    switch (mode) {
+        case 0: // Register
+            ea.is_reg = true;
+            ea.reg = &r[reg];
+            return ea;
+        case 1: // Register deferred
+            ea.addr = r[reg];
+            return ea;
+        case 2: { // Autoincrement
+            ea.addr = r[reg];
+            r[reg] = static_cast<uint16_t>(r[reg] + delta);
+            return ea;
+        }
+        case 3: { // Autoincrement deferred
+            uint16_t ptr = r[reg];
+            r[reg] = static_cast<uint16_t>(r[reg] + delta);
+            ea.addr = read_word(ptr);
+            return ea;
+        }
+        case 4: { // Autodecrement
+            r[reg] = static_cast<uint16_t>(r[reg] - delta);
+            ea.addr = r[reg];
+            return ea;
+        }
+        case 5: { // Autodecrement deferred
+            r[reg] = static_cast<uint16_t>(r[reg] - delta);
+            ea.addr = read_word(r[reg]);
+            return ea;
+        }
+        case 6: { // Index
+            int16_t disp = static_cast<int16_t>(fetch_word());
+            ea.addr = static_cast<uint16_t>(r[reg] + disp);
+            return ea;
+        }
+        case 7: { // Index deferred
+            int16_t disp = static_cast<int16_t>(fetch_word());
+            uint16_t ptr = static_cast<uint16_t>(r[reg] + disp);
+            ea.addr = read_word(ptr);
+            return ea;
+        }
+        default:
+            throw std::runtime_error("Invalid addressing mode");
+    }
+}
+
+uint16_t CPU::read_operand(uint16_t spec) {
+    EA ea = resolve_ea(spec, Access::Read, 2);
+    if (ea.is_reg) {
+        return *ea.reg;
+    }
+    return read_word(ea.addr);
+}
+
+void CPU::write_operand(uint16_t spec, uint16_t value) {
+    EA ea = resolve_ea(spec, Access::Write, 2);
+    if (ea.is_reg) {
+        *ea.reg = value;
+        return;
+    }
+    write_word(ea.addr, value);
+}
+
+uint8_t CPU::read_operand_byte(uint16_t spec) {
+    EA ea = resolve_ea(spec, Access::Read, 1);
+    if (ea.is_reg) {
+        return static_cast<uint8_t>(*ea.reg & 0xFF);
+    }
+    return read_byte(ea.addr);
+}
+
+void CPU::write_operand_byte(uint16_t spec, uint8_t value, bool sign_extend_to_reg) {
+    EA ea = resolve_ea(spec, Access::Write, 1);
+    if (ea.is_reg) {
+        if (sign_extend_to_reg) {
+            int8_t s = static_cast<int8_t>(value);
+            *ea.reg = static_cast<uint16_t>(static_cast<int16_t>(s));
+        } else {
+            *ea.reg = static_cast<uint16_t>((*ea.reg & 0xFF00) | value);
+        }
+        return;
+    }
+    write_byte(ea.addr, value);
+}
+
+uint16_t CPU::operand_address(uint16_t spec) {
+    EA ea = resolve_ea(spec, Access::AddressOnly, 2);
+    if (ea.is_reg) {
+        return *ea.reg;
+    }
+    return ea.addr;
+}
+
+void CPU::step() {
+    if (halted) {
+        return;
+    }
+
+    uint16_t pc_before = r[7];
+    uint16_t instr = fetch_word();
+
+    if (instr == 0x0000) { // HALT
+        halted = true;
+        return;
+    }
+
+    if ((instr & 0xFF00) == 0104000) { // TRAP 104000 + vector
+        uint8_t vec = static_cast<uint8_t>(instr & 0xFF);
+        if (vec == 1) { // putc from R0 low byte
+            if (out_char) {
+                out_char(static_cast<uint8_t>(r[0] & 0xFF));
+            }
+            return;
+        }
+        if (vec == 2) { // getc into R0 low byte
+            int ch = in_char ? in_char() : EOF;
+            if (ch == EOF) {
+                r[0] = 0;
+                psw.z = true;
+            } else {
+                r[0] = static_cast<uint16_t>(ch & 0xFF);
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 3) { // puts from address in R0 (null-terminated)
+            uint16_t addr = r[0];
+            while (true) {
+                uint8_t ch = read_byte(addr);
+                if (ch == 0) break;
+                if (out_char) {
+                    out_char(ch);
+                }
+                addr = static_cast<uint16_t>(addr + 1);
+            }
+            return;
+        }
+        if (vec == 4) { // print signed decimal from R0
+            int16_t value = static_cast<int16_t>(r[0]);
+            std::ostringstream oss;
+            oss << value;
+            auto s = oss.str();
+            for (char c : s) {
+                if (out_char) {
+                    out_char(static_cast<uint8_t>(c));
+                }
+            }
+            return;
+        }
+        if (vec == 5) { // read line into buffer at R0, max bytes in R1 (includes null)
+            uint16_t addr = r[0];
+            uint16_t max = r[1];
+            uint16_t count = 0;
+            bool saw_char = false;
+            while (count + 1 < max) {
+                int ch = in_char ? in_char() : EOF;
+                if (ch == EOF) break;
+                saw_char = true;
+                if (ch == '\n') break;
+                write_byte(static_cast<uint16_t>(addr + count),
+                           static_cast<uint8_t>(ch & 0xFF));
+                ++count;
+            }
+            if (max > 0) {
+                write_byte(static_cast<uint16_t>(addr + count), 0);
+            }
+            r[0] = count;
+            psw.z = (!saw_char && count == 0);
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 6) { // print unsigned hex from R0
+            std::ostringstream oss;
+            oss << "0x" << std::hex << static_cast<uint16_t>(r[0]);
+            auto s = oss.str();
+            for (char c : s) {
+                if (out_char) {
+                    out_char(static_cast<uint8_t>(c));
+                }
+            }
+            return;
+        }
+    }
+
+    uint16_t opcode = instr & 0xF000;
+
+    // Single operand group
+    if ((instr & 0xFFC0) == 0000100) { // JMP 0001dd
+        uint16_t dst = instr & 0x3F;
+        r[7] = operand_address(dst);
+        return;
+    }
+
+    if ((instr & 0xFE00) == 0004000) { // JSR 004Rdd
+        uint16_t reg = (instr >> 6) & 0x7;
+        uint16_t dst = instr & 0x3F;
+        uint16_t addr = operand_address(dst);
+        r[6] = static_cast<uint16_t>(r[6] - 2);
+        write_word(r[6], r[reg]);
+        r[reg] = r[7];
+        r[7] = addr;
+        return;
+    }
+
+    if ((instr & 0xFFF8) == 0000020) { // RTS 00020R
+        uint16_t reg = instr & 0x7;
+        uint16_t old = r[reg];
+        r[reg] = read_word(r[6]);
+        r[6] = static_cast<uint16_t>(r[6] + 2);
+        r[7] = old;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0005000) { // CLR 0050dd
+        uint16_t dst = instr & 0x3F;
+        write_operand(dst, 0);
+        psw.n = false;
+        psw.z = true;
+        psw.v = false;
+        psw.c = false;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0005200) { // INC 0052dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t res = static_cast<uint16_t>(val + 1);
+        write_operand(dst, res);
+        set_nz(res);
+        psw.v = (val == 0x7FFF);
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0005300) { // DEC 0053dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t res = static_cast<uint16_t>(val - 1);
+        write_operand(dst, res);
+        set_nz(res);
+        psw.v = (val == 0x8000);
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0005700) { // TST 0057dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        set_nz(val);
+        psw.v = false;
+        psw.c = false;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0006000) { // ROR 0060dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t new_c = val & 0x1;
+        uint16_t res = static_cast<uint16_t>((psw.c ? 0x8000 : 0) | (val >> 1));
+        write_operand(dst, res);
+        psw.c = new_c != 0;
+        set_nz(res);
+        psw.v = psw.n ^ psw.c;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0006100) { // ROL 0061dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t new_c = (val & 0x8000) != 0;
+        uint16_t res = static_cast<uint16_t>((val << 1) | (psw.c ? 1 : 0));
+        write_operand(dst, res);
+        psw.c = new_c != 0;
+        set_nz(res);
+        psw.v = psw.n ^ psw.c;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0006200) { // ASR 0062dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t new_c = val & 0x1;
+        uint16_t res = static_cast<uint16_t>((val & 0x8000) | (val >> 1));
+        write_operand(dst, res);
+        psw.c = new_c != 0;
+        set_nz(res);
+        psw.v = psw.n ^ psw.c;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0006300) { // ASL 0063dd
+        uint16_t dst = instr & 0x3F;
+        uint16_t val = read_operand(dst);
+        uint16_t new_c = (val & 0x8000) != 0;
+        uint16_t res = static_cast<uint16_t>(val << 1);
+        write_operand(dst, res);
+        psw.c = new_c != 0;
+        set_nz(res);
+        psw.v = psw.n ^ psw.c;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0105000) { // CLRB 1050dd
+        uint16_t dst = instr & 0x3F;
+        write_operand_byte(dst, 0, false);
+        psw.n = false;
+        psw.z = true;
+        psw.v = false;
+        psw.c = false;
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0105200) { // INCB 1052dd
+        uint16_t dst = instr & 0x3F;
+        uint8_t val = read_operand_byte(dst);
+        uint8_t res = static_cast<uint8_t>(val + 1);
+        write_operand_byte(dst, res, false);
+        set_nz_byte(res);
+        psw.v = (val == 0x7F);
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0105300) { // DECB 1053dd
+        uint16_t dst = instr & 0x3F;
+        uint8_t val = read_operand_byte(dst);
+        uint8_t res = static_cast<uint8_t>(val - 1);
+        write_operand_byte(dst, res, false);
+        set_nz_byte(res);
+        psw.v = (val == 0x80);
+        return;
+    }
+
+    if ((instr & 0xFFC0) == 0105700) { // TSTB 1057dd
+        uint16_t dst = instr & 0x3F;
+        uint8_t val = read_operand_byte(dst);
+        set_nz_byte(val);
+        psw.v = false;
+        psw.c = false;
+        return;
+    }
+
+    // Branch group
+    if ((instr & 0xFF00) >= 0000400 && (instr & 0xFF00) <= 0001400) {
+        uint16_t op = instr & 0xFF00;
+        int8_t off = static_cast<int8_t>(instr & 0xFF);
+        if (op == 0000400) { // BR
+            r[7] = static_cast<uint16_t>(r[7] + static_cast<int16_t>(off) * 2);
+            return;
+        }
+        if (op == 0001400) { // BEQ
+            if (psw.z) {
+                r[7] = static_cast<uint16_t>(r[7] + static_cast<int16_t>(off) * 2);
+            }
+            return;
+        }
+        if (op == 0001000) { // BNE
+            if (!psw.z) {
+                r[7] = static_cast<uint16_t>(r[7] + static_cast<int16_t>(off) * 2);
+            }
+            return;
+        }
+    }
+
+    // Double operand group
+    if ((instr & 0xF000) == 0010000 || (instr & 0xF000) == 0060000 ||
+        (instr & 0xF000) == 0020000 || (instr & 0xF000) == 0160000 ||
+        (instr & 0xF000) == 0030000 || (instr & 0xF000) == 0040000 ||
+        (instr & 0xF000) == 0050000) {
+        uint16_t src = (instr >> 6) & 0x3F;
+        uint16_t dst = instr & 0x3F;
+
+        if ((instr & 0xF000) == 0010000) { // MOV 01SSDD
+            uint16_t val = read_operand(src);
+            write_operand(dst, val);
+            set_nz(val);
+            psw.v = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0020000) { // CMP 02SSDD (dst - src)
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint32_t res = static_cast<uint32_t>(d) - static_cast<uint32_t>(s);
+            uint16_t r16 = static_cast<uint16_t>(res);
+            set_nz(r16);
+            psw.v = ((d ^ s) & (d ^ r16) & 0x8000) != 0;
+            psw.c = (res & 0x10000) != 0;
+            return;
+        }
+        if ((instr & 0xF000) == 0060000) { // ADD 06SSDD
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint32_t res = static_cast<uint32_t>(s) + static_cast<uint32_t>(d);
+            uint16_t r16 = static_cast<uint16_t>(res);
+            write_operand(dst, r16);
+            set_nz(r16);
+            psw.v = (~(s ^ d) & (s ^ r16) & 0x8000) != 0;
+            psw.c = (res & 0x10000) != 0;
+            return;
+        }
+        if ((instr & 0xF000) == 0160000) { // SUB 16SSDD
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint32_t res = static_cast<uint32_t>(d) - static_cast<uint32_t>(s);
+            uint16_t r16 = static_cast<uint16_t>(res);
+            write_operand(dst, r16);
+            set_nz(r16);
+            psw.v = ((d ^ s) & (d ^ r16) & 0x8000) != 0;
+            psw.c = (res & 0x10000) != 0;
+            return;
+        }
+        if ((instr & 0xF000) == 0030000) { // BIT 03SSDD
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint16_t r16 = static_cast<uint16_t>(s & d);
+            set_nz(r16);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0040000) { // BIC 04SSDD
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint16_t r16 = static_cast<uint16_t>(d & ~s);
+            write_operand(dst, r16);
+            set_nz(r16);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0050000) { // BIS 05SSDD
+            uint16_t s = read_operand(src);
+            uint16_t d = read_operand(dst);
+            uint16_t r16 = static_cast<uint16_t>(d | s);
+            write_operand(dst, r16);
+            set_nz(r16);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+    }
+
+    // Byte double-operand group
+    if ((instr & 0xF000) == 0110000 || (instr & 0xF000) == 0120000 ||
+        (instr & 0xF000) == 0130000 || (instr & 0xF000) == 0140000 ||
+        (instr & 0xF000) == 0150000) {
+        uint16_t src = (instr >> 6) & 0x3F;
+        uint16_t dst = instr & 0x3F;
+
+        if ((instr & 0xF000) == 0110000) { // MOVB 11SSDD
+            uint8_t val = read_operand_byte(src);
+            write_operand_byte(dst, val, true);
+            set_nz_byte(val);
+            psw.v = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0120000) { // CMPB 12SSDD (dst - src)
+            uint8_t s = read_operand_byte(src);
+            uint8_t d = read_operand_byte(dst);
+            uint16_t res = static_cast<uint16_t>(d) - static_cast<uint16_t>(s);
+            uint8_t r8 = static_cast<uint8_t>(res & 0xFF);
+            set_nz_byte(r8);
+            int8_t sd = static_cast<int8_t>(d);
+            int8_t ss = static_cast<int8_t>(s);
+            int8_t sr = static_cast<int8_t>(r8);
+            psw.v = ((sd ^ ss) & (sd ^ sr) & 0x80) != 0;
+            psw.c = (res & 0x100) != 0;
+            return;
+        }
+        if ((instr & 0xF000) == 0130000) { // BITB 13SSDD
+            uint8_t s = read_operand_byte(src);
+            uint8_t d = read_operand_byte(dst);
+            uint8_t r8 = static_cast<uint8_t>(s & d);
+            set_nz_byte(r8);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0140000) { // BICB 14SSDD
+            uint8_t s = read_operand_byte(src);
+            uint8_t d = read_operand_byte(dst);
+            uint8_t r8 = static_cast<uint8_t>(d & static_cast<uint8_t>(~s));
+            write_operand_byte(dst, r8, false);
+            set_nz_byte(r8);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if ((instr & 0xF000) == 0150000) { // BISB 15SSDD
+            uint8_t s = read_operand_byte(src);
+            uint8_t d = read_operand_byte(dst);
+            uint8_t r8 = static_cast<uint8_t>(d | s);
+            write_operand_byte(dst, r8, false);
+            set_nz_byte(r8);
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "Unimplemented instruction 0x" << std::hex << instr << std::dec
+        << " at PC=" << pc_before;
+    throw std::runtime_error(oss.str());
+}
+
+void CPU::run(uint64_t max_steps) {
+    for (uint64_t i = 0; i < max_steps && !halted; ++i) {
+        step();
+    }
+}
+
+} // namespace pdp11
