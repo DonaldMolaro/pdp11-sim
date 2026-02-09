@@ -1,4 +1,4 @@
-.PHONY: build demo test demo-traps demo-traps-extended
+.PHONY: build demo test demo-traps demo-traps-extended clean
 
 build:
 	cmake -S . -B build
@@ -18,3 +18,7 @@ demo-traps-extended: build
 
 test: build
 	./build/pdp11_tests
+
+clean:
+	rm -rf build
+	rm -f t.mp.tt t.txt /tmp/pdp11_trap_io.txt
