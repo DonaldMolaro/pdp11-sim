@@ -1,4 +1,4 @@
-.PHONY: build demo test demo-traps
+.PHONY: build demo test demo-traps demo-traps-extended
 
 build:
 	cmake -S . -B build
@@ -8,9 +8,13 @@ demo: build
 	./build/pdp11sim examples/demo.asm
 	./build/pdp11sim examples/all_instructions.asm
 	$(MAKE) demo-traps
+	$(MAKE) demo-traps-extended
 
 demo-traps: build
-	@expect -c 'spawn ./build/pdp11sim examples/traps.asm; send "Zhello\\n"; expect eof'
+	@expect -c 'spawn ./build/pdp11sim examples/traps.asm; send "Zhello\n"; expect eof'
+
+demo-traps-extended: build
+	@expect -c 'spawn ./build/pdp11sim examples/traps_extended.asm; send -- "-42 0x1A\n"; expect eof'
 
 test: build
 	./build/pdp11_tests

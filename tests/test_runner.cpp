@@ -301,6 +301,87 @@ TEST(TrapReadLine) {
     REQUIRE(out == "hello");
 }
 
+TEST(TrapPrintUnsigned) {
+    std::string out;
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        MOV #65535, R0
+        TRAP #7
+        HALT
+    )",
+    []() -> int { return EOF; },
+    [&](uint8_t ch) { out.push_back(static_cast<char>(ch)); });
+    REQUIRE(out == "65535");
+    REQUIRE(cpu.halted);
+}
+
+TEST(TrapReadIntAndHex) {
+    std::string input = "  -42 0x1A ";
+    size_t idx = 0;
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        TRAP #9
+        MOV R0, R2
+        TRAP #10
+        MOV R0, R3
+        HALT
+    )",
+    [&]() -> int {
+        if (idx >= input.size()) return EOF;
+        return static_cast<uint8_t>(input[idx++]);
+    },
+    [](uint8_t) {});
+    REQUIRE(static_cast<int16_t>(cpu.r[2]) == -42);
+    REQUIRE(cpu.r[3] == 0x001A);
+}
+
+TEST(TrapFileIO) {
+    std::string out;
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        MOV #path, R0
+        MOV #1, R1
+        TRAP #20
+        MOV R0, R4
+        MOV #buf, R1
+        MOV #5, R2
+        MOVB #72, (R1)+
+        MOVB #101, (R1)+
+        MOVB #108, (R1)+
+        MOVB #108, (R1)+
+        MOVB #111, (R1)+
+        MOV #buf, R1
+        TRAP #22
+        MOV R4, R0
+        TRAP #23
+        MOV #path, R0
+        MOV #0, R1
+        TRAP #20
+        MOV R0, R4
+        MOV #buf, R1
+        MOV #5, R2
+        MOV R4, R0
+        TRAP #21
+        MOV #buf, R0
+        TRAP #3
+        MOV R4, R0
+        TRAP #23
+        HALT
+    path:
+        .WORD 0x2E74
+        .WORD 0x7874
+        .WORD 0x0074
+    buf:
+        .WORD 0
+        .WORD 0
+        .WORD 0
+    )",
+    []() -> int { return EOF; },
+    [&](uint8_t ch) { out.push_back(static_cast<char>(ch)); });
+    REQUIRE(out == "Hello");
+    REQUIRE(cpu.halted);
+}
+
 int main() {
     int passed = 0;
     int failed = 0;

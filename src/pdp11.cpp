@@ -1,5 +1,6 @@
 #include "pdp11.h"
 
+#include <cctype>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
@@ -18,6 +19,7 @@ void CPU::reset() {
     }
     psw = {};
     halted = false;
+    files.clear();
 }
 
 void CPU::load_words(uint16_t address, const std::vector<uint16_t>& words) {
@@ -255,6 +257,231 @@ void CPU::step() {
                     out_char(static_cast<uint8_t>(c));
                 }
             }
+            return;
+        }
+        if (vec == 7) { // print unsigned decimal from R0
+            std::ostringstream oss;
+            oss << static_cast<uint16_t>(r[0]);
+            auto s = oss.str();
+            for (char c : s) {
+                if (out_char) {
+                    out_char(static_cast<uint8_t>(c));
+                }
+            }
+            return;
+        }
+        if (vec == 8) { // println string from address in R0
+            uint16_t addr = r[0];
+            while (true) {
+                uint8_t ch = read_byte(addr);
+                if (ch == 0) break;
+                if (out_char) {
+                    out_char(ch);
+                }
+                addr = static_cast<uint16_t>(addr + 1);
+            }
+            if (out_char) {
+                out_char('\n');
+            }
+            return;
+        }
+        if (vec == 9) { // read signed integer into R0
+            int ch = in_char ? in_char() : EOF;
+            while (ch != EOF && std::isspace(static_cast<unsigned char>(ch))) {
+                ch = in_char ? in_char() : EOF;
+            }
+            if (ch == EOF) {
+                r[0] = 0;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+
+            int sign = 1;
+            if (ch == '-') {
+                sign = -1;
+                ch = in_char ? in_char() : EOF;
+            } else if (ch == '+') {
+                ch = in_char ? in_char() : EOF;
+            }
+
+            bool any = false;
+            int32_t value = 0;
+            while (ch != EOF && ch >= '0' && ch <= '9') {
+                any = true;
+                value = value * 10 + (ch - '0');
+                ch = in_char ? in_char() : EOF;
+            }
+            if (!any) {
+                r[0] = 0;
+                psw.z = true;
+            } else {
+                value *= sign;
+                r[0] = static_cast<uint16_t>(value);
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 10) { // read hex into R0
+            int ch = in_char ? in_char() : EOF;
+            while (ch != EOF && std::isspace(static_cast<unsigned char>(ch))) {
+                ch = in_char ? in_char() : EOF;
+            }
+            if (ch == EOF) {
+                r[0] = 0;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+            if (ch == '0') {
+                int next = in_char ? in_char() : EOF;
+                if (next == 'x' || next == 'X') {
+                    ch = in_char ? in_char() : EOF;
+                } else {
+                    ch = next;
+                }
+            }
+            bool any = false;
+            uint16_t value = 0;
+            while (ch != EOF) {
+                int digit = -1;
+                if (ch >= '0' && ch <= '9') digit = ch - '0';
+                else if (ch >= 'a' && ch <= 'f') digit = 10 + (ch - 'a');
+                else if (ch >= 'A' && ch <= 'F') digit = 10 + (ch - 'A');
+                else break;
+                any = true;
+                value = static_cast<uint16_t>((value << 4) | (digit & 0xF));
+                ch = in_char ? in_char() : EOF;
+            }
+            if (!any) {
+                r[0] = 0;
+                psw.z = true;
+            } else {
+                r[0] = value;
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 20) { // open file: R0=addr, R1=mode
+            uint16_t addr = r[0];
+            std::string path;
+            for (int i = 0; i < 1024; ++i) {
+                uint8_t ch = read_byte(static_cast<uint16_t>(addr + i));
+                if (ch == 0) break;
+                path.push_back(static_cast<char>(ch));
+            }
+            std::ios::openmode mode = std::ios::binary;
+            switch (r[1]) {
+                case 0: mode |= std::ios::in; break;
+                case 1: mode |= std::ios::out | std::ios::trunc; break;
+                case 2: mode |= std::ios::out | std::ios::app; break;
+                case 3: mode |= std::ios::in | std::ios::out; break;
+                default: mode |= std::ios::in; break;
+            }
+            auto fs = std::make_unique<std::fstream>(path, mode);
+            if (!fs->is_open()) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+            } else {
+                size_t handle = 0;
+                for (; handle < files.size(); ++handle) {
+                    if (!files[handle]) {
+                        break;
+                    }
+                }
+                if (handle == files.size()) {
+                    files.push_back(nullptr);
+                }
+                files[handle] = std::move(fs);
+                r[0] = static_cast<uint16_t>(handle);
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 21) { // read file: R0=handle, R1=buf, R2=max
+            uint16_t handle = r[0];
+            uint16_t addr = r[1];
+            uint16_t max = r[2];
+            if (handle >= files.size() || !files[handle] || max == 0) {
+                r[0] = 0;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+            std::string buf;
+            buf.resize(max);
+            files[handle]->read(&buf[0], max);
+            std::streamsize count = files[handle]->gcount();
+            for (std::streamsize i = 0; i < count; ++i) {
+                write_byte(static_cast<uint16_t>(addr + i),
+                           static_cast<uint8_t>(buf[static_cast<size_t>(i)]));
+            }
+            r[0] = static_cast<uint16_t>(count);
+            psw.z = (count == 0);
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 22) { // write file: R0=handle, R1=buf, R2=len
+            uint16_t handle = r[0];
+            if (handle >= files.size() || !files[handle]) {
+                r[0] = 0;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+            uint16_t addr = r[1];
+            uint16_t len = r[2];
+            std::string buf;
+            buf.resize(len);
+            for (uint16_t i = 0; i < len; ++i) {
+                buf[i] = static_cast<char>(read_byte(static_cast<uint16_t>(addr + i)));
+            }
+            files[handle]->write(buf.data(), len);
+            if (files[handle]->bad()) {
+                r[0] = 0;
+                psw.z = true;
+            } else {
+                r[0] = len;
+                psw.z = (len == 0);
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 23) { // close file: R0=handle
+            uint16_t handle = r[0];
+            if (handle >= files.size() || !files[handle]) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+            } else {
+                files[handle]->close();
+                files[handle].reset();
+                r[0] = 0;
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
             return;
         }
     }

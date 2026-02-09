@@ -49,12 +49,13 @@ Or use `make build`.
 - `examples/demo.asm`: quick loop demo
 - `examples/all_instructions.asm`: exercises all implemented instructions
 - `examples/traps.asm`: exercises all TRAP I/O vectors (expects input)
+- `examples/traps_extended.asm`: exercises extended TRAP text and file I/O (expects input)
 
 Run all demos:
 ```sh
 make demo
 ```
-The `demo` target uses `expect` to provide input for `examples/traps.asm`.
+The `demo` target uses `expect` to provide input for `examples/traps.asm` and `examples/traps_extended.asm`.
 
 ## Simple I/O (TRAP)
 The simulator provides a minimal TRAP interface:
@@ -64,6 +65,14 @@ The simulator provides a minimal TRAP interface:
 - `TRAP #4`: print signed decimal value from `R0`.
 - `TRAP #5`: read a line into buffer at `R0` with max size `R1` (includes null). Returns length in `R0`.
 - `TRAP #6`: print hex value from `R0` (format `0xNNNN`).
+- `TRAP #7`: print unsigned decimal value from `R0`.
+- `TRAP #8`: print string at `R0` followed by newline.
+- `TRAP #9`: read signed decimal into `R0` (skips leading whitespace).
+- `TRAP #10`: read hex into `R0` (accepts optional `0x`).
+- `TRAP #20`: open file at address `R0`, mode in `R1` (0=read,1=write,2=append,3=read/write). Returns handle in `R0`, `0xFFFF` on failure.
+- `TRAP #21`: read file handle in `R0` into buffer `R1`, max bytes `R2`. Returns bytes read in `R0`.
+- `TRAP #22`: write file handle in `R0` from buffer `R1`, bytes `R2`. Returns bytes written in `R0`.
+- `TRAP #23`: close file handle in `R0`, returns `0` on success or `0xFFFF` on failure.
 
 ## Tests
 ```sh

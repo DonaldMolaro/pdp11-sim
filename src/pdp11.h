@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -24,6 +26,7 @@ struct CPU {
     std::vector<uint8_t> mem;
     std::function<int()> in_char;
     std::function<void(uint8_t)> out_char;
+    std::vector<std::unique_ptr<std::fstream>> files;
 
     CPU();
 
