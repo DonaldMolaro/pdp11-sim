@@ -2,6 +2,8 @@
 
 #include <cctype>
 #include <cstdio>
+#include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 
@@ -21,6 +23,7 @@ void CPU::reset() {
     halted = false;
     mem_bank = 0;
     files.clear();
+    mem_watch = {};
 }
 
 void CPU::load_words(uint16_t address, const std::vector<uint16_t>& words) {
@@ -37,6 +40,12 @@ uint16_t CPU::read_word(uint16_t address) const {
     uint32_t p = phys_addr(address, mem_bank);
     uint16_t lo = mem[p];
     uint16_t hi = mem[(p + 1) & (CPU::kMemSize - 1)];
+    if (mem_watch.trace_all || (mem_watch.enabled && address >= mem_watch.start && address <= mem_watch.end)) {
+        std::cout << "MEM R PC=0x" << std::hex << std::setw(4) << std::setfill('0') << r[7]
+                  << " addr=0x" << std::setw(4) << address
+                  << " size=2 val=0x" << std::setw(4) << static_cast<uint16_t>(lo | (hi << 8))
+                  << std::dec << "\n";
+    }
     return static_cast<uint16_t>(lo | (hi << 8));
 }
 
@@ -44,6 +53,12 @@ void CPU::write_word(uint16_t address, uint16_t value) {
     uint32_t p = phys_addr(address, mem_bank);
     mem[p] = static_cast<uint8_t>(value & 0xFF);
     mem[(p + 1) & (CPU::kMemSize - 1)] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    if (mem_watch.trace_all || (mem_watch.enabled && address >= mem_watch.start && address <= mem_watch.end)) {
+        std::cout << "MEM W PC=0x" << std::hex << std::setw(4) << std::setfill('0') << r[7]
+                  << " addr=0x" << std::setw(4) << address
+                  << " size=2 val=0x" << std::setw(4) << value
+                  << std::dec << "\n";
+    }
 }
 
 uint16_t CPU::read_word_code(uint16_t address) const {
@@ -61,12 +76,24 @@ void CPU::write_word_code(uint16_t address, uint16_t value) {
 
 uint8_t CPU::read_byte(uint16_t address) const {
     uint32_t p = phys_addr(address, mem_bank);
+    if (mem_watch.trace_all || (mem_watch.enabled && address >= mem_watch.start && address <= mem_watch.end)) {
+        std::cout << "MEM R PC=0x" << std::hex << std::setw(4) << std::setfill('0') << r[7]
+                  << " addr=0x" << std::setw(4) << address
+                  << " size=1 val=0x" << std::setw(2) << static_cast<uint16_t>(mem[p])
+                  << std::dec << "\n";
+    }
     return mem[p];
 }
 
 void CPU::write_byte(uint16_t address, uint8_t value) {
     uint32_t p = phys_addr(address, mem_bank);
     mem[p] = value;
+    if (mem_watch.trace_all || (mem_watch.enabled && address >= mem_watch.start && address <= mem_watch.end)) {
+        std::cout << "MEM W PC=0x" << std::hex << std::setw(4) << std::setfill('0') << r[7]
+                  << " addr=0x" << std::setw(4) << address
+                  << " size=1 val=0x" << std::setw(2) << static_cast<uint16_t>(value)
+                  << std::dec << "\n";
+    }
 }
 
 uint16_t CPU::fetch_word() {

@@ -45,6 +45,18 @@ Or use `make build`.
 ./build/pdp11sim examples/demo.asm --trace
 ```
 
+### Memory Watch / Trace
+```sh
+./build/pdp11sim examples/demo.asm --watch=0x0100:16
+./build/pdp11sim examples/demo.asm --trace-mem
+```
+
+### Symbol Map
+```sh
+./build/pdp11sim examples/demo.asm --dump-symbols
+./build/pdp11sim examples/demo.asm --map out.map
+```
+
 ## Demos
 - `examples/demo.asm`: quick loop demo
 - `examples/all_instructions.asm`: exercises all implemented instructions

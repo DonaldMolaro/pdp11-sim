@@ -29,6 +29,13 @@ struct CPU {
     std::function<void(uint8_t)> out_char;
     std::vector<std::unique_ptr<std::fstream>> files;
 
+    struct MemWatch {
+        bool enabled = false;
+        bool trace_all = false;
+        uint16_t start = 0;
+        uint16_t end = 0;
+    } mem_watch;
+
     CPU();
 
     void reset();

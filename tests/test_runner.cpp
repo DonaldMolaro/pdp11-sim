@@ -3,6 +3,7 @@
 
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -503,6 +504,36 @@ TEST(TrapPCRelativeLiteralUsesCodeBank) {
     []() -> int { return EOF; },
     [](uint8_t) {});
     REQUIRE(cpu.r[0] == 0xBEEF);
+}
+
+TEST(MemWatchLogs) {
+    auto old_buf = std::cout.rdbuf();
+    std::ostringstream capture;
+    std::cout.rdbuf(capture.rdbuf());
+    {
+        Assembler asmblr;
+        AsmResult res = asmblr.assemble(R"(
+            .ORIG 0
+            MOV #0x0100, R1
+            MOV #0x1234, (R1)
+            MOV (R1), R0
+            HALT
+        )");
+        CPU cpu;
+        cpu.reset();
+        cpu.r[7] = res.start;
+        cpu.r[6] = 0xFFFE;
+        cpu.load_words(res.start, res.words);
+        cpu.mem_watch.enabled = true;
+        cpu.mem_watch.trace_all = false;
+        cpu.mem_watch.start = 0x0100;
+        cpu.mem_watch.end = 0x0100;
+        cpu.run(1000);
+    }
+    std::cout.rdbuf(old_buf);
+    std::string out = capture.str();
+    REQUIRE(out.find("MEM W") != std::string::npos);
+    REQUIRE(out.find("addr=0x0100") != std::string::npos);
 }
 
 int main() {
