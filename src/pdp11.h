@@ -17,11 +17,12 @@ struct Flags {
 };
 
 struct CPU {
-    static constexpr uint32_t kMemSize = 65536; // bytes
+    static constexpr uint32_t kMemSize = 262144; // bytes (4 banks of 64K)
 
     uint16_t r[8]{}; // R0-R7 (R7=PC, R6=SP)
     Flags psw{};
     bool halted = false;
+    uint8_t mem_bank = 0; // 0-3
 
     std::vector<uint8_t> mem;
     std::function<int()> in_char;
@@ -37,6 +38,8 @@ struct CPU {
 
     uint16_t read_word(uint16_t address) const;
     void write_word(uint16_t address, uint16_t value);
+    uint16_t read_word_code(uint16_t address) const;
+    void write_word_code(uint16_t address, uint16_t value);
     uint8_t read_byte(uint16_t address) const;
     void write_byte(uint16_t address, uint8_t value);
 
@@ -55,6 +58,7 @@ private:
         bool is_reg = false;
         uint16_t* reg = nullptr;
         uint16_t addr = 0;
+        bool is_code = false;
     };
 
     EA resolve_ea(uint16_t spec, Access access, int size);
