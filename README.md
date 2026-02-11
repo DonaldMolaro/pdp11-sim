@@ -73,6 +73,47 @@ The simulator provides a minimal TRAP interface:
 - `TRAP #21`: read file handle in `R0` into buffer `R1`, max bytes `R2`. Returns bytes read in `R0`.
 - `TRAP #22`: write file handle in `R0` from buffer `R1`, bytes `R2`. Returns bytes written in `R0`.
 - `TRAP #23`: close file handle in `R0`, returns `0` on success or `0xFFFF` on failure.
+- `TRAP #24`: seek file handle in `R0` by signed offset `R1`, origin `R2` (0=beg,1=cur,2=end). Returns `0` or `0xFFFF`.
+- `TRAP #25`: tell file handle in `R0`. Returns position in `R0` (low 16 bits) or `0xFFFF` on failure.
+- `TRAP #26`: set data memory bank (`R0` = 0..3). Instruction fetch stays in bank 0; data uses `bank << 16 | addr`.
+
+## Banked Memory (256K)
+The simulator provides 4 data banks of 64K each (total 256K). Instruction fetch is always from bank 0. Data reads/writes use the current bank selected by `TRAP #26`.
+
+### How It Works
+- **Code**: always read from bank 0.
+- **Data**: physical address = `(bank << 16) | addr16`.
+- **Bank select**: `TRAP #26` with `R0 = 0..3`.
+
+### Example
+```asm
+.ORIG 0
+; Write to bank 0
+MOV #0, R0
+TRAP #26
+MOV #0x0100, R5
+MOV #123, R1
+MOV R1, (R5)
+
+; Switch to bank 1 and read (will be 0)
+MOV #1, R0
+TRAP #26
+MOV (R5), R2
+
+; Write to bank 1
+MOV #1, R1
+MOV R1, (R5)
+
+; Switch back to bank 0 and read original 123
+MOV #0, R0
+TRAP #26
+MOV (R5), R3
+
+HALT
+```
+Expected results:
+- `R2 = 0`
+- `R3 = 123`
 
 ## Tests
 ```sh
