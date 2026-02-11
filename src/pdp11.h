@@ -5,6 +5,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace pdp11 {
@@ -35,6 +36,10 @@ struct CPU {
         uint16_t start = 0;
         uint16_t end = 0;
     } mem_watch;
+
+    std::unordered_set<uint16_t> breakpoints;
+    bool break_hit = false;
+    uint16_t break_addr = 0;
 
     CPU();
 

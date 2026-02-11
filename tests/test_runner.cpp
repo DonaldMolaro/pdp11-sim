@@ -536,6 +536,26 @@ TEST(MemWatchLogs) {
     REQUIRE(out.find("addr=0x0100") != std::string::npos);
 }
 
+TEST(BreakpointsStopRun) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(R"(
+        .ORIG 0
+        MOV #1, R0
+        MOV #2, R1
+        HALT
+    )");
+    CPU cpu;
+    cpu.reset();
+    cpu.r[7] = res.start;
+    cpu.r[6] = 0xFFFE;
+    cpu.load_words(res.start, res.words);
+    cpu.breakpoints.insert(0);
+    cpu.run(1000);
+    REQUIRE(cpu.break_hit);
+    REQUIRE(cpu.break_addr == 0);
+    REQUIRE(!cpu.halted);
+}
+
 int main() {
     int passed = 0;
     int failed = 0;

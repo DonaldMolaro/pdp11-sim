@@ -57,6 +57,12 @@ Or use `make build`.
 ./build/pdp11sim examples/demo.asm --map out.map
 ```
 
+### Breakpoints
+```sh
+./build/pdp11sim examples/demo.asm --break=0x0004
+./build/pdp11sim examples/demo.asm --break=loop
+```
+
 ## Demos
 - `examples/demo.asm`: quick loop demo
 - `examples/all_instructions.asm`: exercises all implemented instructions

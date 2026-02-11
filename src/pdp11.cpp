@@ -24,6 +24,9 @@ void CPU::reset() {
     mem_bank = 0;
     files.clear();
     mem_watch = {};
+    breakpoints.clear();
+    break_hit = false;
+    break_addr = 0;
 }
 
 void CPU::load_words(uint16_t address, const std::vector<uint16_t>& words) {
@@ -937,6 +940,11 @@ void CPU::step() {
 
 void CPU::run(uint64_t max_steps) {
     for (uint64_t i = 0; i < max_steps && !halted; ++i) {
+        if (!breakpoints.empty() && breakpoints.find(r[7]) != breakpoints.end()) {
+            break_hit = true;
+            break_addr = r[7];
+            return;
+        }
         step();
     }
 }
