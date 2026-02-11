@@ -70,6 +70,33 @@ static CPU run_with_io(const std::string& asm_source,
     return cpu;
 }
 
+static CPU run_with_watch(const std::string& asm_source,
+                          uint16_t watch_start,
+                          uint16_t watch_end,
+                          std::string* watch_out,
+                          uint64_t max_steps = 100000) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(asm_source);
+    CPU cpu;
+    cpu.reset();
+    cpu.r[7] = res.start;
+    cpu.r[6] = 0xFFFE;
+    cpu.load_words(res.start, res.words);
+    cpu.mem_watch.enabled = true;
+    cpu.mem_watch.start = watch_start;
+    cpu.mem_watch.end = watch_end;
+
+    std::ostringstream buf;
+    std::streambuf* old = std::cout.rdbuf(buf.rdbuf());
+    cpu.run(max_steps);
+    std::cout.rdbuf(old);
+
+    if (watch_out) {
+        *watch_out = buf.str();
+    }
+    return cpu;
+}
+
 TEST(MovImmediate) {
     auto cpu = run(R"(
         .ORIG 0
@@ -165,6 +192,54 @@ TEST(PCRelativeLabels) {
         .WORD 123
     )");
     REQUIRE(cpu.r[1] == 123);
+}
+
+TEST(SymbolTableContainsLabel) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(R"(
+        .ORIG 0
+        BR loop
+    loop:
+        HALT
+    )");
+    REQUIRE(res.symbols.find("LOOP") != res.symbols.end());
+}
+
+TEST(BreakpointStops) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(R"(
+        .ORIG 0
+        MOV #1, R0
+    stop:
+        INC R0
+        HALT
+    )");
+    CPU cpu;
+    cpu.reset();
+    cpu.r[7] = res.start;
+    cpu.r[6] = 0xFFFE;
+    cpu.load_words(res.start, res.words);
+    cpu.breakpoints.insert(res.symbols.at("STOP"));
+    cpu.run();
+    REQUIRE(cpu.break_hit);
+    REQUIRE(cpu.break_addr == res.symbols.at("STOP"));
+    REQUIRE(cpu.r[0] == 1);
+    REQUIRE(cpu.halted == false);
+}
+
+TEST(MemWatchOutput) {
+    std::string out;
+    auto cpu = run_with_watch(R"(
+        .ORIG 0
+        MOV #0x0100, R0
+        MOV #0x00AA, (R0)
+        MOV (R0), R1
+        HALT
+    )", 0x0100, 0x0100, &out);
+    REQUIRE(cpu.r[1] == 0x00AA);
+    REQUIRE(out.find("MEM W") != std::string::npos);
+    REQUIRE(out.find("MEM R") != std::string::npos);
+    REQUIRE(out.find("addr=0x0100") != std::string::npos);
 }
 
 TEST(FlagsFromCMP) {

@@ -68,6 +68,9 @@ Or use `make build`.
 - `examples/all_instructions.asm`: exercises all implemented instructions
 - `examples/traps.asm`: exercises all TRAP I/O vectors (expects input)
 - `examples/traps_extended.asm`: exercises extended TRAP text and file I/O (expects input)
+- `examples/mem_watch_demo.asm`: memory watch/trace demo
+- `examples/break_demo.asm`: breakpoint demo
+- `examples/symbols_demo.asm`: symbol map demo
 
 Run all demos:
 ```sh
