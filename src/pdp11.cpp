@@ -19,36 +19,58 @@ void CPU::reset() {
     }
     psw = {};
     halted = false;
+    mem_bank = 0;
     files.clear();
 }
 
 void CPU::load_words(uint16_t address, const std::vector<uint16_t>& words) {
     for (size_t i = 0; i < words.size(); ++i) {
-        write_word(address + static_cast<uint16_t>(i * 2), words[i]);
+        write_word_code(address + static_cast<uint16_t>(i * 2), words[i]);
     }
 }
 
+static inline uint32_t phys_addr(uint16_t addr, uint8_t bank) {
+    return (static_cast<uint32_t>(bank & 0x3) << 16) | addr;
+}
+
 uint16_t CPU::read_word(uint16_t address) const {
-    uint16_t lo = mem[address];
-    uint16_t hi = mem[(address + 1) & 0xFFFF];
+    uint32_t p = phys_addr(address, mem_bank);
+    uint16_t lo = mem[p];
+    uint16_t hi = mem[(p + 1) & (CPU::kMemSize - 1)];
     return static_cast<uint16_t>(lo | (hi << 8));
 }
 
 void CPU::write_word(uint16_t address, uint16_t value) {
-    mem[address] = static_cast<uint8_t>(value & 0xFF);
-    mem[(address + 1) & 0xFFFF] = static_cast<uint8_t>((value >> 8) & 0xFF);
+    uint32_t p = phys_addr(address, mem_bank);
+    mem[p] = static_cast<uint8_t>(value & 0xFF);
+    mem[(p + 1) & (CPU::kMemSize - 1)] = static_cast<uint8_t>((value >> 8) & 0xFF);
+}
+
+uint16_t CPU::read_word_code(uint16_t address) const {
+    uint32_t p = phys_addr(address, 0);
+    uint16_t lo = mem[p];
+    uint16_t hi = mem[(p + 1) & (CPU::kMemSize - 1)];
+    return static_cast<uint16_t>(lo | (hi << 8));
+}
+
+void CPU::write_word_code(uint16_t address, uint16_t value) {
+    uint32_t p = phys_addr(address, 0);
+    mem[p] = static_cast<uint8_t>(value & 0xFF);
+    mem[(p + 1) & (CPU::kMemSize - 1)] = static_cast<uint8_t>((value >> 8) & 0xFF);
 }
 
 uint8_t CPU::read_byte(uint16_t address) const {
-    return mem[address];
+    uint32_t p = phys_addr(address, mem_bank);
+    return mem[p];
 }
 
 void CPU::write_byte(uint16_t address, uint8_t value) {
-    mem[address] = value;
+    uint32_t p = phys_addr(address, mem_bank);
+    mem[p] = value;
 }
 
 uint16_t CPU::fetch_word() {
-    uint16_t value = read_word(r[7]);
+    uint16_t value = read_word_code(r[7]);
     r[7] = static_cast<uint16_t>(r[7] + 2);
     return value;
 }
@@ -84,12 +106,15 @@ CPU::EA CPU::resolve_ea(uint16_t spec, Access access, int size) {
         case 2: { // Autoincrement
             ea.addr = r[reg];
             r[reg] = static_cast<uint16_t>(r[reg] + delta);
+            if (reg == 7) {
+                ea.is_code = true; // immediate operand lives in code space
+            }
             return ea;
         }
         case 3: { // Autoincrement deferred
             uint16_t ptr = r[reg];
             r[reg] = static_cast<uint16_t>(r[reg] + delta);
-            ea.addr = read_word(ptr);
+            ea.addr = (reg == 7) ? read_word_code(ptr) : read_word(ptr);
             return ea;
         }
         case 4: { // Autodecrement
@@ -105,12 +130,15 @@ CPU::EA CPU::resolve_ea(uint16_t spec, Access access, int size) {
         case 6: { // Index
             int16_t disp = static_cast<int16_t>(fetch_word());
             ea.addr = static_cast<uint16_t>(r[reg] + disp);
+            if (reg == 7) {
+                ea.is_code = true; // PC-relative literal lives in code space
+            }
             return ea;
         }
         case 7: { // Index deferred
             int16_t disp = static_cast<int16_t>(fetch_word());
             uint16_t ptr = static_cast<uint16_t>(r[reg] + disp);
-            ea.addr = read_word(ptr);
+            ea.addr = (reg == 7) ? read_word_code(ptr) : read_word(ptr);
             return ea;
         }
         default:
@@ -122,6 +150,9 @@ uint16_t CPU::read_operand(uint16_t spec) {
     EA ea = resolve_ea(spec, Access::Read, 2);
     if (ea.is_reg) {
         return *ea.reg;
+    }
+    if (ea.is_code) {
+        return read_word_code(ea.addr);
     }
     return read_word(ea.addr);
 }
@@ -139,6 +170,9 @@ uint8_t CPU::read_operand_byte(uint16_t spec) {
     EA ea = resolve_ea(spec, Access::Read, 1);
     if (ea.is_reg) {
         return static_cast<uint8_t>(*ea.reg & 0xFF);
+    }
+    if (ea.is_code) {
+        return static_cast<uint8_t>(read_word_code(ea.addr) & 0xFF);
     }
     return read_byte(ea.addr);
 }
@@ -479,6 +513,75 @@ void CPU::step() {
                 r[0] = 0;
                 psw.z = false;
             }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 24) { // seek file: R0=handle, R1=offset (signed), R2=whence
+            uint16_t handle = r[0];
+            if (handle >= files.size() || !files[handle]) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+            std::ios::seekdir dir = std::ios::beg;
+            switch (r[2]) {
+                case 0: dir = std::ios::beg; break;
+                case 1: dir = std::ios::cur; break;
+                case 2: dir = std::ios::end; break;
+                default: dir = std::ios::beg; break;
+            }
+            int16_t off = static_cast<int16_t>(r[1]);
+            files[handle]->clear();
+            files[handle]->seekg(off, dir);
+            files[handle]->seekp(off, dir);
+            if (files[handle]->fail()) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+            } else {
+                r[0] = 0;
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 25) { // tell file: R0=handle
+            uint16_t handle = r[0];
+            if (handle >= files.size() || !files[handle]) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+                psw.n = false;
+                psw.v = false;
+                psw.c = false;
+                return;
+            }
+            files[handle]->clear();
+            std::streampos pos = files[handle]->tellg();
+            if (pos < 0) {
+                pos = files[handle]->tellp();
+            }
+            if (pos < 0) {
+                r[0] = 0xFFFF;
+                psw.z = true;
+            } else {
+                r[0] = static_cast<uint16_t>(pos & 0xFFFF);
+                psw.z = false;
+            }
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 26) { // set memory bank: R0=0..3
+            mem_bank = static_cast<uint8_t>(r[0] & 0x3);
+            r[0] = 0;
+            psw.z = false;
             psw.n = false;
             psw.v = false;
             psw.c = false;

@@ -382,6 +382,129 @@ TEST(TrapFileIO) {
     REQUIRE(cpu.halted);
 }
 
+TEST(TrapSeekTell) {
+    std::string out;
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        MOV #path, R0
+        MOV #1, R1
+        TRAP #20
+        MOV R0, R4
+        MOV #buf, R1
+        MOV #6, R2
+        MOVB #65, (R1)+
+        MOVB #66, (R1)+
+        MOVB #67, (R1)+
+        MOVB #68, (R1)+
+        MOVB #69, (R1)+
+        MOVB #70, (R1)+
+        MOV #buf, R1
+        TRAP #22
+        MOV R4, R0
+        TRAP #23
+        MOV #path, R0
+        MOV #0, R1
+        TRAP #20
+        MOV R0, R4
+        MOV R4, R0
+        MOV #2, R1
+        MOV #0, R2
+        TRAP #24
+        MOV R4, R0
+        MOV #buf, R1
+        MOV #2, R2
+        TRAP #21
+        MOV #buf, R1
+        MOVB #0, 2(R1)
+        MOV #buf, R0
+        TRAP #3
+        MOV R4, R0
+        TRAP #25
+        MOV R0, R2
+        MOV R4, R0
+        TRAP #23
+        HALT
+    path:
+        .WORD 0x742f
+        .WORD 0x706d
+        .WORD 0x702f
+        .WORD 0x3170
+        .WORD 0x5f31
+        .WORD 0x6573
+        .WORD 0x2e6b
+        .WORD 0x7874
+        .WORD 0x0074
+    buf:
+        .WORD 0
+        .WORD 0
+        .WORD 0
+    )",
+    []() -> int { return EOF; },
+    [&](uint8_t ch) { out.push_back(static_cast<char>(ch)); });
+    REQUIRE(out == "CD");
+    REQUIRE(cpu.r[2] == 4);
+    REQUIRE(cpu.halted);
+}
+
+TEST(TrapMemoryBank) {
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        MOV #0, R0
+        TRAP #26
+        MOV #0x0100, R5
+        MOV #123, R1
+        MOV R1, (R5)
+        MOV #1, R0
+        TRAP #26
+        MOV #0, R2
+        MOV (R5), R2
+        MOV #1, R1
+        MOV R1, (R5)
+        MOV #0, R0
+        TRAP #26
+        MOV (R5), R3
+        HALT
+    )",
+    []() -> int { return EOF; },
+    [](uint8_t) {});
+    REQUIRE(cpu.r[2] == 0);
+    REQUIRE(cpu.r[3] == 123);
+}
+
+TEST(TrapImmediateUsesCodeBank) {
+    auto cpu = run_with_io(R"(
+        .ORIG 0x1000
+        MOV #1, R0
+        TRAP #26
+        MOV #0x1234, R3
+        MOV #0x0100, R1
+        MOV R3, (R1)
+        MOV (R1), R0
+        HALT
+    )",
+    []() -> int { return EOF; },
+    [](uint8_t) {});
+    REQUIRE(cpu.r[0] == 0x1234);
+}
+
+TEST(TrapPCRelativeLiteralUsesCodeBank) {
+    auto cpu = run_with_io(R"(
+        .ORIG 0x2000
+        MOV #2, R0
+        TRAP #26
+        MOV literal, R1
+        MOV #0x0100, R2
+        MOV R1, (R2)
+        MOV (R2), R0
+        HALT
+    literal:
+        .WORD 0xBEEF
+    )",
+    []() -> int { return EOF; },
+    [](uint8_t) {});
+    REQUIRE(cpu.r[0] == 0xBEEF);
+}
+
 int main() {
     int passed = 0;
     int failed = 0;
