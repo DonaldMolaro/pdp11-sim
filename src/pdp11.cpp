@@ -1,17 +1,27 @@
 #include "pdp11.h"
 
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace pdp11 {
 
 CPU::CPU() : mem(kMemSize, 0) {
+    auto rng = std::make_shared<std::mt19937>(std::random_device{}());
     in_char = []() -> int { return std::getc(stdin); };
     out_char = [](uint8_t v) { std::putchar(static_cast<int>(v)); };
+    rand_word = [rng]() -> uint16_t {
+        return static_cast<uint16_t>((*rng)() & 0xFFFF);
+    };
+    sleep_ms = [](uint16_t ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    };
     reset();
 }
 
@@ -612,6 +622,38 @@ void CPU::step() {
             mem_bank = static_cast<uint8_t>(r[0] & 0x3);
             r[0] = 0;
             psw.z = false;
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 27) { // random word into R0
+            r[0] = rand_word ? rand_word() : 0;
+            psw.z = (r[0] == 0);
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 28) { // clear screen and home cursor
+            if (clear_screen) {
+                clear_screen();
+            } else if (out_char) {
+                for (const char* p = "\x1b[2J\x1b[H"; *p; ++p) {
+                    out_char(static_cast<uint8_t>(*p));
+                }
+            }
+            psw.z = false;
+            psw.n = false;
+            psw.v = false;
+            psw.c = false;
+            return;
+        }
+        if (vec == 29) { // sleep R0 milliseconds
+            if (sleep_ms) {
+                sleep_ms(r[0]);
+            }
+            psw.z = (r[0] == 0);
             psw.n = false;
             psw.v = false;
             psw.c = false;

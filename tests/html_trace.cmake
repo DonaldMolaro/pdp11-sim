@@ -1,0 +1,18 @@
+file(WRITE "${OUT}/trace-test.asm" "MOV #42, R0\nHALT\n")
+function(check_trace name reason expected_regs)
+    execute_process(COMMAND "${SIM}" "${OUT}/trace-test.asm"
+        --trace-html "${OUT}/${name}.html" ${ARGN}
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "Simulator failed: ${output} ${error}")
+    endif()
+    file(READ "${OUT}/${name}.html" html)
+    string(FIND "${html}" "stop:\"${reason}\"" stop_index)
+    string(FIND "${html}" "${expected_regs}" regs_index)
+    if(stop_index EQUAL -1 OR regs_index EQUAL -1)
+        message(FATAL_ERROR "${name}: missing final state or stop reason")
+    endif()
+endfunction()
+check_trace(entry "breakpoint" "regs:[0,0,0,0,0,0,65534,0]" --break=0)
+check_trace(limit "step limit" "regs:[42,0,0,0,0,0,65534,4]" 1)
+check_trace(halt "HALT" "regs:[42,0,0,0,0,0,65534,6]")

@@ -1,5 +1,6 @@
 #include "assembler.h"
 #include "pdp11.h"
+#include "disasm.h"
 
 #include <functional>
 #include <iostream>
@@ -581,6 +582,59 @@ TEST(TrapPCRelativeLiteralUsesCodeBank) {
     REQUIRE(cpu.r[0] == 0xBEEF);
 }
 
+TEST(TrapRandomWord) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(R"(
+        .ORIG 0
+        TRAP #27
+        HALT
+    )");
+    CPU cpu;
+    cpu.reset();
+    cpu.rand_word = []() -> uint16_t { return 0xCAFE; };
+    cpu.r[7] = res.start;
+    cpu.r[6] = 0xFFFE;
+    cpu.load_words(res.start, res.words);
+    cpu.run(1000);
+    REQUIRE(cpu.r[0] == 0xCAFE);
+    REQUIRE(cpu.halted);
+}
+
+TEST(TrapClearScreen) {
+    std::string out;
+    auto cpu = run_with_io(R"(
+        .ORIG 0
+        TRAP #28
+        HALT
+    )",
+    []() -> int { return EOF; },
+    [&](uint8_t ch) { out.push_back(static_cast<char>(ch)); });
+    REQUIRE(out == "\x1b[2J\x1b[H");
+    REQUIRE(cpu.halted);
+}
+
+TEST(TrapSleepMs) {
+    Assembler asmblr;
+    AsmResult res = asmblr.assemble(R"(
+        .ORIG 0
+        MOV #25, R0
+        TRAP #29
+        HALT
+    )");
+    CPU cpu;
+    cpu.reset();
+    uint16_t slept = 0;
+    cpu.sleep_ms = [&](uint16_t ms) {
+        slept = ms;
+    };
+    cpu.r[7] = res.start;
+    cpu.r[6] = 0xFFFE;
+    cpu.load_words(res.start, res.words);
+    cpu.run(1000);
+    REQUIRE(slept == 25);
+    REQUIRE(cpu.halted);
+}
+
 TEST(MemWatchLogs) {
     auto old_buf = std::cout.rdbuf();
     std::ostringstream capture;
@@ -629,6 +683,33 @@ TEST(BreakpointsStopRun) {
     REQUIRE(cpu.break_hit);
     REQUIRE(cpu.break_addr == 0);
     REQUIRE(!cpu.halted);
+}
+
+TEST(ClearScreenAfterCpuMove) {
+    CPU moved;
+    {
+        CPU original;
+        moved = std::move(original);
+    }
+    std::string out;
+    moved.out_char = [&](uint8_t ch) { out.push_back(static_cast<char>(ch)); };
+    moved.load_words(0, {0104000 | 28, 0});
+    moved.run();
+    REQUIRE(out == "\x1b[2J\x1b[H");
+    REQUIRE(moved.halted);
+}
+
+TEST(BankedDisassemblyUsesInstructionStream) {
+    Assembler assembler;
+    auto program = assembler.assemble("MOV #0x1234, R3\nHALT\n");
+    CPU cpu;
+    cpu.load_words(0, program.words);
+    for (uint8_t bank = 1; bank < 4; ++bank) {
+        cpu.mem_bank = bank;
+        cpu.write_word(0, 0);
+        cpu.write_word(2, 0xFFFF);
+        REQUIRE(disassemble(cpu, 0) == "MOV #0x1234, R3");
+    }
 }
 
 int main() {

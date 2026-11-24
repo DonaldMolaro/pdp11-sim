@@ -17,3 +17,10 @@ target_link_libraries(pdp11sim pdp11)
 
 add_executable(pdp11_tests tests/test_runner.cpp)
 target_link_libraries(pdp11_tests pdp11)
+
+enable_testing()
+add_test(NAME cpu COMMAND pdp11_tests)
+add_test(NAME html_trace COMMAND ${CMAKE_COMMAND}
+    -DSIM=$<TARGET_FILE:pdp11sim>
+    -DOUT=${CMAKE_CURRENT_BINARY_DIR}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/html_trace.cmake)

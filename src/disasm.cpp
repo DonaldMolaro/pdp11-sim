@@ -20,7 +20,7 @@ static std::string format_operand(const CPU& cpu, uint16_t spec, uint16_t& pc_ne
     uint16_t reg = spec & 0x7;
 
     auto read_ext = [&]() {
-        uint16_t word = cpu.read_word(pc_next);
+        uint16_t word = cpu.read_word_code(pc_next);
         pc_next = static_cast<uint16_t>(pc_next + 2);
         return word;
     };
@@ -57,7 +57,7 @@ static std::string format_operand(const CPU& cpu, uint16_t spec, uint16_t& pc_ne
         case 7: {
             int16_t disp = static_cast<int16_t>(read_ext());
             if (reg == 7) {
-                uint16_t target = cpu.read_word(static_cast<uint16_t>(pc_next + disp));
+                uint16_t target = static_cast<uint16_t>(pc_next + disp);
                 return "@" + fmt_word(target);
             }
             return "@" + fmt_word(static_cast<uint16_t>(disp)) + "(" + reg_name(reg) + ")";
@@ -68,7 +68,7 @@ static std::string format_operand(const CPU& cpu, uint16_t spec, uint16_t& pc_ne
 }
 
 std::string disassemble(const CPU& cpu, uint16_t pc) {
-    uint16_t instr = cpu.read_word(pc);
+    uint16_t instr = cpu.read_word_code(pc);
     uint16_t pc_next = static_cast<uint16_t>(pc + 2);
 
     if (instr == 0x0000) {

@@ -28,6 +28,9 @@ struct CPU {
     std::vector<uint8_t> mem;
     std::function<int()> in_char;
     std::function<void(uint8_t)> out_char;
+    std::function<uint16_t()> rand_word;
+    std::function<void()> clear_screen;
+    std::function<void(uint16_t)> sleep_ms;
     std::vector<std::unique_ptr<std::fstream>> files;
 
     struct MemWatch {

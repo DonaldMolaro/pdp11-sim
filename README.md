@@ -45,6 +45,22 @@ Or use `make build`.
 ./build/pdp11sim examples/demo.asm --trace
 ```
 
+### State Trace
+```sh
+./build/pdp11sim examples/demo.asm --trace-state
+./build/pdp11sim examples/demo.asm --trace --trace-state
+```
+`--trace-state` prints registers and flags each step as the program runs.
+
+### HTML Trace Viewer
+```sh
+./build/pdp11sim examples/demo.asm --trace-html trace.html
+```
+This writes a self-contained HTML viewer with a step slider, instruction display, registers, flags, and active bank state.
+The viewer provides playback after execution finishes, including a final snapshot
+with the stop reason (HALT, breakpoint, or step limit). It does not update live
+while the simulator is running or waiting for input.
+
 ### Memory Watch / Trace
 ```sh
 ./build/pdp11sim examples/demo.asm --watch=0x0100:16
@@ -68,6 +84,10 @@ Or use `make build`.
 - `examples/all_instructions.asm`: exercises all implemented instructions
 - `examples/traps.asm`: exercises all TRAP I/O vectors (expects input)
 - `examples/traps_extended.asm`: exercises extended TRAP text and file I/O (expects input)
+- `examples/guess_hex.asm`: three-try random hex guessing game
+- `examples/slot_machine.asm`: tiny slot machine using random, clear-screen, and sleep
+- `examples/treasure_doors.asm`: pick one of three random treasure doors
+- `examples/rock_paper_scissors.asm`: single-round rock-paper-scissors against the simulator
 - `examples/mem_watch_demo.asm`: memory watch/trace demo
 - `examples/break_demo.asm`: breakpoint demo
 - `examples/symbols_demo.asm`: symbol map demo
@@ -97,6 +117,9 @@ The simulator provides a minimal TRAP interface:
 - `TRAP #24`: seek file handle in `R0` by signed offset `R1`, origin `R2` (0=beg,1=cur,2=end). Returns `0` or `0xFFFF`.
 - `TRAP #25`: tell file handle in `R0`. Returns position in `R0` (low 16 bits) or `0xFFFF` on failure.
 - `TRAP #26`: set data memory bank (`R0` = 0..3). Instruction fetch stays in bank 0; data uses `bank << 16 | addr`.
+- `TRAP #27`: generate a random 16-bit value into `R0`.
+- `TRAP #28`: clear the terminal and home the cursor using ANSI escape codes.
+- `TRAP #29`: sleep for `R0` milliseconds.
 
 ## Banked Memory (256K)
 The simulator provides 4 data banks of 64K each (total 256K). Instruction fetch is always from bank 0. Data reads/writes use the current bank selected by `TRAP #26`.
